@@ -22,7 +22,7 @@
 We release a 3D foundation model, Poincar3, that learns multi-view geometry from only training on image sequences. Poincar3 uses a multi-view transformer and self-distillation, achieving strong zero-shot features and attention maps. For example, you can finetune our model for just 10K steps on one GPU and get 65+ AUC@30 on RE10K, whereas training from scratch gives around 5 AUC@30.
 
 ## Updates
-- [September 28, 2026] Poincar3 public code release.
+- [September 30, 2026] Poincar3 public code release.
 
 ## Install
 
