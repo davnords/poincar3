@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.venv*/
+.ruff_cache/
+*.pt
+*.pth
+data
+data/
+experiments/runs/
+experiments/eval/
+/demo.png
+/demo.pdf
+wandb/
+slurm_outs/
+dist/
+/correlation.jpg
