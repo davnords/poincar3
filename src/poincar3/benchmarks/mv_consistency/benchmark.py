@@ -16,8 +16,6 @@ from poincar3.benchmarks.dense_features import (
     extract_dense_features,
     extract_dense_features_at_block,
     extract_global_attention_qk,
-    extract_global_attention_qk_multilayer,
-    get_all_attention_probes,
     get_attention_probe,
     get_feature_probe,
     resolve_block_fraction,
@@ -195,66 +193,6 @@ def find_correspondences_attention_based(
     return torch.stack([matched_u, matched_v], dim=1).float()
 
 
-def _dense_attention_multilayer_scores(
-    q_alls: list[torch.Tensor], k_alls: list[torch.Tensor], scales: list[float], source_start: int, target_start: int, Hf: int, Wf: int
-) -> torch.Tensor:
-    """Dense source-patch x target-patch raw (pre-softmax) attention score
-    matrix for one view pair, bidirectionally combined and averaged over
-    every cross-view block.
-    Returns `(Hf*Wf, Hf*Wf)`, row = source patch, column = target patch."""
-    combined = None
-    for q_all, k_all, scale in zip(q_alls, k_alls, scales):
-        q_source, q_target = q_all[:, source_start : source_start + Hf * Wf], q_all[:, target_start : target_start + Hf * Wf]
-        k_source, k_target = k_all[:, source_start : source_start + Hf * Wf], k_all[:, target_start : target_start + Hf * Wf]
-        s_to_t = torch.einsum("hnd,hmd->nmh", q_source, k_target).mean(dim=-1) * scale  # (Ns, Nt), avg over heads
-        t_to_s = torch.einsum("hnd,hmd->nmh", q_target, k_source).mean(dim=-1) * scale  # (Nt, Ns), avg over heads
-        layer_combined = (s_to_t + t_to_s.transpose(0, 1)) / 2
-        combined = layer_combined if combined is None else combined + layer_combined
-    return combined / len(q_alls)  # avg over blocks
-
-
-def find_correspondences_attention_multilayer_based(
-    uv_s: torch.Tensor,
-    q_alls: list[torch.Tensor],
-    k_alls: list[torch.Tensor],
-    scales: list[float],
-    source_start: int,
-    target_start: int,
-    Hf: int,
-    Wf: int,
-    H: int,
-    W: int,
-    temperature: float,
-) -> torch.Tensor:
-    """Multi-layer, bidirectional analogue of `find_correspondences_attention_based`
-    -- a soft-argmax over the attention scores,
-    generalized via `get_all_attention_probes` to any backbone with multiple
-    cross-view blocks. Builds the dense score matrix once (no query
-    interpolation), soft-argmaxes every row into a `(Hf, Wf, 2)` target-grid
-    field, then bilinearly upsamples that field to pixel resolution (`H, W`)
-    and samples it at `uv_s`'s exact positions -- sub-pixel precision comes
-    from interpolating the output field, not the input query. Returns
-    pixel-space `(u, v)`, unlike the other correspondence functions' patch-grid
-    space."""
-    scores = _dense_attention_multilayer_scores(q_alls, k_alls, scales, source_start, target_start, Hf, Wf)
-    weights = (scores / temperature).softmax(dim=-1)  # (Ns, Nt) soft-argmax over every source patch's row
-    grid_u = torch.arange(Wf, device=uv_s.device, dtype=weights.dtype)
-    grid_v = torch.arange(Hf, device=uv_s.device, dtype=weights.dtype)
-    vv, uu = torch.meshgrid(grid_v, grid_u, indexing="ij")
-    matched_u = (weights * uu.reshape(1, -1)).sum(dim=-1)
-    matched_v = (weights * vv.reshape(1, -1)).sum(dim=-1)
-    flow_field = torch.stack([matched_u, matched_v], dim=-1).view(1, Hf, Wf, 2).permute(0, 3, 1, 2)  # (1,2,Hf,Wf)
-
-    field_px = F.interpolate(flow_field, size=(H, W), mode="bilinear", align_corners=False)[0]
-    field_px = field_px * torch.tensor([W / Wf, H / Hf], device=uv_s.device).view(2, 1, 1)  # patch coords -> pixel coords
-
-    norm_u = 2.0 * uv_s[:, 0] / (W - 1) - 1.0
-    norm_v = 2.0 * uv_s[:, 1] / (H - 1) - 1.0
-    grid_query = torch.stack([norm_u, norm_v], dim=1).view(1, 1, -1, 2)
-    sampled = F.grid_sample(field_px.unsqueeze(0), grid_query, align_corners=False)  # (1, 2, 1, N)
-    return sampled.view(2, -1).T  # (N, 2), pixel-space (u, v) in the target view
-
-
 def compute_errors_for_sample(
     pred_tracks: torch.Tensor, gt_tracks: torch.Tensor, depths: torch.Tensor, intrinsics: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -429,30 +367,30 @@ class MvConsistencyBenchmark:
         # features. "attention": read the model's own softmax cross-view
         # attention at the last "global" inter-frame block -- does its actual
         # attention agree with correspondence, rather than its output feature
-        # similarity? "attention_multilayer" averages that over every
-        # cross-view block instead of just the last one.
-        correspondence_method: Literal["feature", "attention", "attention_multilayer"] = "feature"
+        # similarity?
+        correspondence_method: Literal["feature", "attention"] = "feature"
         # Only used by "attention". `None` probes the model's *last* cross-view
         # block, i.e. what it actually uses for its own output. Set an index to
         # probe a specific block instead; see each backbone's
-        # `attention_probe` for which indices are valid. No effect for
-        # "attention_multilayer", which always reads every block.
+        # `attention_probe` for which indices are valid.
         attention_block_index: int | None = None
-        # Only used by "attention_multilayer": soft-argmax temperature. Well
-        # below 1 sharpens the match toward a hard argmax.
-        attention_temperature: float = 0.0001
         # Only used by "feature". `None` reads dense features off the model's
         # final forward-pass output. Set an index to instead read raw
         # residual-stream tokens straight off a block, bypassing everything
         # after it -- the feature-method analogue of `attention_block_index`,
         # over the same index space. `single_view` has no effect when set.
         feature_block_index: int | None = None
-        # Alternative to the two indices above: a fraction in `(0, 1]` of the
+        # Used by both "attention" and "feature": a fraction in `(0, 1]` of the
         # model's depth, resolved to the nearest *valid* block. Lets one
         # relative "how far into the network" axis compare backbones of very
-        # different depths. `1.0` matches the `None` default. Mutually
-        # exclusive with the corresponding absolute index.
-        block_fraction: float | None = None
+        # different depths. `1.0` is the last block. An explicit
+        # `attention_block_index`/`feature_block_index` takes precedence, as
+        # does `single_view` (which bypasses the decoder, so there is no block
+        # to pick); `None` falls back to the last block / final output.
+        # 0.75 is the best depth fraction for Poincar3 on ScanNet, but the
+        # best fraction differs between models -- tune it per backbone when
+        # comparing.
+        block_fraction: float | None = 0.75
         # Also fit an essential matrix + RANSAC per view pair and report
         # rotation/translation error. Off by default: noisy on top of already
         # noisy correspondences, and the 2D/3D tracking metrics already capture
@@ -470,24 +408,6 @@ class MvConsistencyBenchmark:
         )
         assert not (cfg.single_view and cfg.feature_block_index is not None), (
             "single_view has no effect with feature_block_index set -- it already bypasses "
-            "the multi-view decoder, reading a specific block does the same via a different path"
-        )
-        assert not (cfg.correspondence_method == "attention_multilayer" and cfg.attention_block_index is not None), (
-            "attention_block_index has no effect with correspondence_method='attention_multilayer' -- "
-            "it always reads every valid cross-view block"
-        )
-        assert not (cfg.correspondence_method == "attention_multilayer" and cfg.block_fraction is not None), (
-            "block_fraction has no effect with correspondence_method='attention_multilayer' -- "
-            "it always reads every valid cross-view block"
-        )
-        assert not (cfg.block_fraction is not None and cfg.attention_block_index is not None), (
-            "set either block_fraction or attention_block_index, not both"
-        )
-        assert not (cfg.block_fraction is not None and cfg.feature_block_index is not None), (
-            "set either block_fraction or feature_block_index, not both"
-        )
-        assert not (cfg.single_view and cfg.block_fraction is not None), (
-            "single_view has no effect with block_fraction set -- it already bypasses "
             "the multi-view decoder, reading a specific block does the same via a different path"
         )
         assert cfg.block_fraction is None or 0 < cfg.block_fraction <= 1, (
@@ -511,20 +431,14 @@ class MvConsistencyBenchmark:
         model.eval()
         device = next(model.parameters()).device
         use_attention = self.cfg.correspondence_method == "attention"
-        use_attention_multilayer = self.cfg.correspondence_method == "attention_multilayer"
-        if use_attention_multilayer:
-            probes = get_all_attention_probes(model)
-            if not probes:
-                raise RuntimeError(
-                    "correspondence_method='attention_multilayer' needs `get_all_attention_probes(model)` to "
-                    "return at least one probe -- this backbone has no genuine cross-view attention to read at "
-                    "all (e.g. a single-view-only baseline like DINOv3)."
-                )
-        elif self.cfg.block_fraction is not None:
+        explicit_index = self.cfg.attention_block_index if use_attention else self.cfg.feature_block_index
+        if explicit_index is not None:
+            block_index = explicit_index
+        elif self.cfg.block_fraction is not None and not (self.cfg.single_view and not use_attention):
             block_index = resolve_block_fraction(model, self.cfg.block_fraction, use_attention)
         else:
-            block_index = self.cfg.attention_block_index if use_attention else self.cfg.feature_block_index
-        use_feature_block = (not use_attention) and (not use_attention_multilayer) and (block_index is not None)
+            block_index = None
+        use_feature_block = (not use_attention) and (block_index is not None)
         if use_attention:
             probe = get_attention_probe(model, block_index)
         elif use_feature_block:
@@ -574,14 +488,6 @@ class MvConsistencyBenchmark:
                 num_tokens = patch_token_start + Hf * Wf
                 q_source = q_all[:, patch_token_start : patch_token_start + Hf * Wf, :]
                 q_source = q_source.reshape(-1, Hf, Wf, q_source.shape[-1])
-            elif use_attention_multilayer:
-                qks = extract_global_attention_qk_multilayer(probes, images)
-                Hf, Wf = H // model.patch_size, W // model.patch_size
-                patch_token_start = probes[0].patch_token_start
-                num_tokens = patch_token_start + Hf * Wf
-                q_alls = [q_all for q_all, _, _ in qks]
-                k_alls = [k_all for _, k_all, _ in qks]
-                scales = [scale for _, _, scale in qks]
             elif use_feature_block:
                 feats = extract_dense_features_at_block(probe, images, model.patch_size)
                 Hf, Wf = feats.shape[-2:]
@@ -601,13 +507,6 @@ class MvConsistencyBenchmark:
                         uv_s_feat, q_source, k_all, scale, target_start, Hf, Wf
                     )
                     pred_tracks[:, v] = uv_t_feat * torch.tensor([W / Wf, H / Hf], device=device)
-                elif use_attention_multilayer:
-                    # already pixel-space, unlike the other two methods' patch-grid-space matches
-                    target_start = v * num_tokens + patch_token_start
-                    pred_tracks[:, v] = find_correspondences_attention_multilayer_based(
-                        start_points, q_alls, k_alls, scales, patch_token_start, target_start, Hf, Wf, H, W,
-                        self.cfg.attention_temperature,
-                    )
                 else:
                     uv_t_feat = find_correspondences_feature_based(uv_s_feat, feat_s, feats[v : v + 1])
                     pred_tracks[:, v] = uv_t_feat * torch.tensor([W / Wf, H / Hf], device=device)

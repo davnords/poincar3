@@ -124,10 +124,10 @@ def resolve_block_fraction(model: nn.Module, fraction: float, use_attention: boo
 
 
 def _scan_valid_block_indices(model: nn.Module, use_attention: bool) -> list[int]:
-    """Brute-force valid-index scan shared by `resolve_block_fraction` and
-    `get_all_attention_probes` -- probing every index up to
-    `_MAX_BLOCKS_TO_SCAN` is cheap (`attention_probe`/`feature_probe` calls
-    only inspect module structure, no forward pass)."""
+    """Brute-force valid-index scan used by `resolve_block_fraction` --
+    probing every index up to `_MAX_BLOCKS_TO_SCAN` is cheap
+    (`attention_probe`/`feature_probe` calls only inspect module structure, no
+    forward pass)."""
     get_probe = get_attention_probe if use_attention else get_feature_probe
     valid_indices = []
     for i in range(_MAX_BLOCKS_TO_SCAN):
@@ -138,15 +138,6 @@ def _scan_valid_block_indices(model: nn.Module, use_attention: bool) -> list[int
         if probe is not None:
             valid_indices.append(i)
     return valid_indices
-
-
-def get_all_attention_probes(model: nn.Module) -> list[AttentionProbe]:
-    """Every genuine cross-view block `model.attention_probe(i)` returns a
-    probe for, in block-index order -- for multi-layer attention ensembling
-    (`extract_global_attention_qk_multilayer`). Works for any backbone
-    implementing `attention_probe(block_index)`, no per-backbone change
-    needed. Empty for backbones with no cross-view attention (e.g. DINOv3)."""
-    return [get_attention_probe(model, i) for i in _scan_valid_block_indices(model, use_attention=True)]
 
 
 def _capture_sdpa_qk(attn_module: nn.Module, run_forward: Callable[[], None]) -> tuple[torch.Tensor, torch.Tensor, float]:
@@ -214,71 +205,6 @@ def extract_global_attention_qk(probe: AttentionProbe, images: torch.Tensor) -> 
     `probe.patch_token_start`), `scale` is the attention temperature."""
     q, k, scale = _capture_sdpa_qk(probe.attn_module, lambda: probe.run_forward(images))
     return q[0], k[0], scale  # squeeze the batch dim -- run_forward always calls with batch_size=1
-
-
-def _capture_sdpa_qk_multi(
-    attn_modules: list[nn.Module], run_forward: Callable[[], None]
-) -> list[tuple[torch.Tensor, torch.Tensor, float]]:
-    """Multi-target analogue of `_capture_sdpa_qk`: captures `(q, k, scale)`
-    for every module in `attn_modules` in a single `run_forward()` call
-    instead of one whole forward pass per module. Uses one shared "currently
-    active module" slot, gated the same way as `_capture_sdpa_qk` (a forward
-    pre/post hook per module) -- safe since these modules' forward calls
-    never nest or overlap within one pass, so exactly one is active at a time."""
-    captured: dict[int, dict[str, torch.Tensor | float]] = {}
-    active: dict[str, nn.Module | None] = {"module": None}
-    real_sdpa = F.scaled_dot_product_attention
-
-    def patched_sdpa(query, key, value, *args, **kwargs):
-        m = active["module"]
-        if m is not None and id(m) not in captured:
-            captured[id(m)] = {
-                "q": query.detach(),
-                "k": key.detach(),
-                "scale": kwargs.get("scale") or query.shape[-1] ** -0.5,
-            }
-        return real_sdpa(query, key, value, *args, **kwargs)
-
-    owning_modules = {sys.modules.get(type(m).__module__) for m in attn_modules}
-    owning_modules = {m for m in owning_modules if getattr(m, "scaled_dot_product_attention", None) is real_sdpa}
-
-    handles = []
-    for m in attn_modules:
-        handles.append(m.register_forward_pre_hook(lambda _mod, _inp, m=m: active.__setitem__("module", m)))
-        handles.append(m.register_forward_hook(lambda _mod, _inp, _out: active.__setitem__("module", None)))
-    torch.nn.functional.scaled_dot_product_attention = patched_sdpa
-    for om in owning_modules:
-        om.scaled_dot_product_attention = patched_sdpa
-    try:
-        run_forward()
-    finally:
-        for handle in handles:
-            handle.remove()
-        torch.nn.functional.scaled_dot_product_attention = real_sdpa
-        for om in owning_modules:
-            om.scaled_dot_product_attention = real_sdpa
-
-    missing = [m for m in attn_modules if id(m) not in captured]
-    if missing:
-        raise RuntimeError(
-            f"{len(missing)} of {len(attn_modules)} attn_modules never called scaled_dot_product_attention "
-            "during run_forward() -- get_all_attention_probes() picked a wrong module for some block."
-        )
-    return [(captured[id(m)]["q"], captured[id(m)]["k"], captured[id(m)]["scale"]) for m in attn_modules]
-
-
-def extract_global_attention_qk_multilayer(
-    probes: list[AttentionProbe], images: torch.Tensor
-) -> list[tuple[torch.Tensor, torch.Tensor, float]]:
-    """Multi-block analogue of `extract_global_attention_qk`: one `(q, k,
-    scale)` per probe in `probes`, all captured from a single forward pass.
-    `probes` should be every cross-view block of one model (see
-    `get_all_attention_probes`) -- they share the same `run_forward`, so only
-    `probes[0].run_forward` is actually invoked."""
-    if not probes:
-        return []
-    captured = _capture_sdpa_qk_multi([p.attn_module for p in probes], lambda: probes[0].run_forward(images))
-    return [(q[0], k[0], scale) for q, k, scale in captured]  # squeeze the batch dim, like extract_global_attention_qk
 
 
 def extract_dense_features_at_block(
