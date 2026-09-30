@@ -82,7 +82,7 @@ All evaluations, except feed-forward reconstruction, can be accessed through the
 ```bash
 uv run python experiments/eval.py --evaluation mvcorr --mvcorr.dataset scannet
 ```
-This should give an accuracy at 50px of around 89.6 whereas using `--mvcorr.correspondence-method attention` should instead give around 94.9.
+This should give an accuracy at 50px of around 89.6 whereas using `--mvcorr.correspondence-method attention` should instead give around 94.9. We also give easy access to baselines by using e.g. `--backbone dinov3_vitl`.
 
 ### Feed-forward reconstruction
 
