@@ -1,7 +1,7 @@
 <div align="center">
 <h1>Emergent Multi-View Geometry Through Self-Distillation</h1>
 
-<a href="https://arxiv.org/abs/XXXX.XXXXX"><img src="https://img.shields.io/badge/arXiv-XXXX.XXXXX-b31b1b" alt="arXiv"></a>
+<a href="https://arxiv.org/abs/2609.39227"><img src="https://img.shields.io/badge/arXiv-2609.39227-b31b1b" alt="arXiv"></a>
 <a href="https://pypi.org/project/poincar3/"><img src="https://img.shields.io/pypi/v/poincar3" alt="PyPI"></a>
 <a href="https://www.davnords.com/poincar3"><img src="https://img.shields.io/badge/Project_Page-green" alt="Project Page"></a>
 
@@ -180,5 +180,13 @@ Please feel free to email me directly at davnords@chalmers.se for any questions.
 ## BibTeX
 
 ```bibtex
-TBD
+@misc{nordstrom2026emergentmultiview,
+      title={Emergent Multi-View Geometry Through Self-Distillation}, 
+      author={David Nordström and Thibaut Loiseau and Vincent Lepetit and Michael Felsberg and Guillaume Bourmaud and Fredrik Kahl},
+      year={2026},
+      eprint={2609.39227},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2609.39227}, 
+}
 ```
