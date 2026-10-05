@@ -4,8 +4,7 @@ __pycache__/
 .ruff_cache/
 *.pt
 *.pth
-data
-data/
+/data
 experiments/runs/
 experiments/eval/
 /demo.png
