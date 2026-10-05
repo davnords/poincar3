@@ -14,7 +14,7 @@
     <img src="assets/demo.png" alt="Emerging matching capabilities from self-supervision." width=64%>
     <img src="assets/poincare.png" alt="Henri Poincaré" width=17%>
     <br>
-    <em>Left: Emerging matching capabilities from self-supervision. Simply using Poincar3's attention map reliable tracks can be created. Produced by <code>demo.py</code>. Right: Picture of Henri Poincaré, who argued that a being without motion cannot understand 3D space. Motivating our use of multi-view data.</em>
+    <em>Left: Emerging matching capabilities from self-supervision. Simply using Poincar3's attention map reliable tracks can be created. Produced by <code>demo.py</code>. Right: Picture of Henri Poincaré, who argued that a being without motion cannot understand 3D space. Motivating our use of multi-view data. This motivation originates from SeeSE(3) (Chen et. al, 2026).</em>
 </p>
 
 ## Overview
@@ -188,5 +188,14 @@ Please feel free to email me directly at davnords@chalmers.se for any questions.
       archivePrefix={arXiv},
       primaryClass={cs.CV},
       url={https://arxiv.org/abs/2609.39227}, 
+}
+```
+Also consider citing SeeSE(3) which we build our motivation from:
+```bibtex
+@inproceedings{chen2026seese3,
+      title={SeeSE3: Emergence of 3D Space in Vision Features},
+      author={Caroline Chen and Sayna Ebrahimi and Fedor Kitashov and Ming-Hsuan Yang and Leonidas Guibas and Viorica Pătrăucean and Maks Ovsjanikov},
+      booktitle={Advances in Neural Information Processing Systems (NeurIPS)},
+      year={2026},
 }
 ```
